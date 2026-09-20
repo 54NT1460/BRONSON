@@ -1,0 +1,196 @@
+{
+  "name": "content-scheduler-publish",
+  "meta": {
+    "description": "Corre 3 veces al día (12:15, 17:15, 21:30 hora Puerto Rico) según config/content-schedule.json. Toma el próximo item de content_queue para el turno correspondiente, lo edita con template, pide aprobación por WhatsApp y publica en las plataformas configuradas."
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "15 12 * * *" },
+            { "field": "cronExpression", "expression": "15 17 * * *" },
+            { "field": "cronExpression", "expression": "30 21 * * *" }
+          ]
+        }
+      },
+      "name": "Schedule Trigger (3x/día, hora PR)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "notes": "n8n corre en UTC por defecto en Railway — ajustar TZ=America/Puerto_Rico en las variables de entorno del servicio para que estas horas sean locales."
+    },
+    {
+      "parameters": {
+        "jsCode": "const hour = new Date().getHours();\nlet slot;\nif (hour === 12) slot = 'turno_1';\nelse if (hour === 17) slot = 'turno_2';\nelse slot = 'turno_3';\nreturn [{ json: { slot } }];"
+      },
+      "name": "Determine Slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "query": "SELECT * FROM content_queue WHERE slot = $1 AND status = 'raw_uploaded' ORDER BY created_at ASC LIMIT 1;",
+        "additionalFields": { "queryParams": "={{[$json.slot]}}" }
+      },
+      "name": "Fetch Next Queue Item",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    },
+    {
+      "parameters": {
+        "url": "={{$env.VIDEO_EDIT_API_URL}}/render",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "input_url", "value": "={{$json.raw_file_url}}" },
+            { "name": "template", "value": "={{$json.collab_with_minitrucks ? 'bronson_minitrucks_template' : 'bronson_hq_template'}}" },
+            { "name": "brand_logo", "value": "bronson_composites_logo.png" }
+          ]
+        }
+      },
+      "name": "Edit Video (template automático)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [660, 0],
+      "notes": "Sustituir VIDEO_EDIT_API_URL por el servicio de edición elegido (ej. Shotstack, Creatomate, JSON2Video). Todos aceptan un template_id + variables y devuelven un render_id que se consulta hasta 'done'."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Genera caption sugerido según si es colab o HQ\nconst item = $('Fetch Next Queue Item').first().json;\nconst caption = item.collab_with_minitrucks\n  ? '🔧 Build day con @minitrucks — piezas Bronson Composites en acción. Fiberglass y carbon fiber hechos para durar. 👉 DM para info.'\n  : '🏭 Directo desde Bronson HQ — así se hacen nuestras piezas custom. 👉 DM para info.';\nreturn [{ json: { ...item, caption, edited_file_url: $input.first().json.output_url } }];"
+      },
+      "name": "Build Caption",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "query": "UPDATE content_queue SET edited_file_url=$1, caption=$2, status='pending_approval' WHERE id=$3;",
+        "additionalFields": { "queryParams": "={{[$json.edited_file_url, $json.caption, $json.id]}}" }
+      },
+      "name": "Update Queue (pending_approval)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1100, 0],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    },
+    {
+      "parameters": {
+        "workflowId": "whatsapp-approval-gate",
+        "options": {}
+      },
+      "name": "Execute: WhatsApp Approval Gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1320, 0],
+      "notes": "Pasa {type:'content', payload:{...content_queue row}}. Espera respuesta antes de continuar (usar 'Wait' + webhook de respuesta, o modo síncrono si el sub-workflow lo soporta)."
+    },
+    {
+      "parameters": {
+        "conditions": { "boolean": [{ "value1": "={{$json.approved}}", "value2": true }] }
+      },
+      "name": "IF: Approved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1540, 0]
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v21.0/{{$env.IG_BUSINESS_ACCOUNT_ID}}/media",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "video_url", "value": "={{$('Update Queue (pending_approval)').first().json.edited_file_url}}" },
+            { "name": "caption", "value": "={{$('Update Queue (pending_approval)').first().json.caption}}" },
+            { "name": "access_token", "value": "={{$env.META_ACCESS_TOKEN}}" }
+          ]
+        }
+      },
+      "name": "Publish: Instagram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1760, -80]
+    },
+    {
+      "parameters": {
+        "url": "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "method": "POST",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "tikTokOAuth2Api"
+      },
+      "name": "Publish: TikTok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1760, 40],
+      "credentials": { "tikTokOAuth2Api": { "id": "TIKTOK_CREDENTIAL", "name": "Bronson TikTok" } }
+    },
+    {
+      "parameters": {
+        "url": "=https://graph.facebook.com/v21.0/{{$env.FB_PAGE_ID}}/videos",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "file_url", "value": "={{$('Update Queue (pending_approval)').first().json.edited_file_url}}" },
+            { "name": "description", "value": "={{$('Update Queue (pending_approval)').first().json.caption}}" },
+            { "name": "access_token", "value": "={{$env.META_ACCESS_TOKEN}}" }
+          ]
+        }
+      },
+      "name": "Publish: Facebook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1760, 160]
+    },
+    {
+      "parameters": {
+        "query": "UPDATE content_queue SET status='published', published_at=now(), approval_status='approved' WHERE id=$1;",
+        "additionalFields": { "queryParams": "={{[$('Update Queue (pending_approval)').first().json.id]}}" }
+      },
+      "name": "Update Queue (published)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1980, 40],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    },
+    {
+      "parameters": {
+        "query": "UPDATE content_queue SET status='rejected', approval_status='rejected' WHERE id=$1;",
+        "additionalFields": { "queryParams": "={{[$('Update Queue (pending_approval)').first().json.id]}}" }
+      },
+      "name": "Update Queue (rejected)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1760, 280],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (3x/día, hora PR)": { "main": [[{ "node": "Determine Slot", "type": "main", "index": 0 }]] },
+    "Determine Slot": { "main": [[{ "node": "Fetch Next Queue Item", "type": "main", "index": 0 }]] },
+    "Fetch Next Queue Item": { "main": [[{ "node": "Edit Video (template automático)", "type": "main", "index": 0 }]] },
+    "Edit Video (template automático)": { "main": [[{ "node": "Build Caption", "type": "main", "index": 0 }]] },
+    "Build Caption": { "main": [[{ "node": "Update Queue (pending_approval)", "type": "main", "index": 0 }]] },
+    "Update Queue (pending_approval)": { "main": [[{ "node": "Execute: WhatsApp Approval Gate", "type": "main", "index": 0 }]] },
+    "Execute: WhatsApp Approval Gate": { "main": [[{ "node": "IF: Approved", "type": "main", "index": 0 }]] },
+    "IF: Approved": {
+      "main": [
+        [
+          { "node": "Publish: Instagram", "type": "main", "index": 0 },
+          { "node": "Publish: TikTok", "type": "main", "index": 0 },
+          { "node": "Publish: Facebook", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Update Queue (rejected)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Publish: Instagram": { "main": [[{ "node": "Update Queue (published)", "type": "main", "index": 0 }]] },
+    "Publish: TikTok": { "main": [[{ "node": "Update Queue (published)", "type": "main", "index": 0 }]] },
+    "Publish: Facebook": { "main": [[{ "node": "Update Queue (published)", "type": "main", "index": 0 }]] }
+  }
+}

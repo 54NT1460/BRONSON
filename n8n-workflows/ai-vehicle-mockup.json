@@ -1,0 +1,134 @@
+{
+  "name": "ai-vehicle-mockup",
+  "meta": {
+    "description": "Para clientes previos: genera con Gemini (Nano Banana) una imagen de su Jeep con las piezas Bronson Composites 'instaladas', para remarketing. Pasa por aprobación de WhatsApp antes de enviarse al cliente."
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Manual/Webhook Trigger (nuevo mockup solicitado)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "notes": "Se dispara manualmente desde un formulario interno o Airtable/Sheet donde marcas qué cliente + qué pieza(s) quieres mockear. Payload esperado: {customer_id, products_shown: []}"
+    },
+    {
+      "parameters": {
+        "query": "SELECT * FROM customers WHERE id = $1;",
+        "additionalFields": { "queryParams": "={{[$json.customer_id]}}" }
+      },
+      "name": "Fetch Customer + Vehicle Photo",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [220, 0],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    },
+    {
+      "parameters": {
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={{$env.GEMINI_API_KEY}}",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParametersJson": "={{JSON.stringify({\n  contents: [{\n    parts: [\n      { text: `Edita esta foto de un Jeep para mostrar instaladas las siguientes piezas custom en fiberglass/carbon fiber, manteniendo el vehículo, ángulo, luz y fondo originales lo más realista posible: ${$json.products_shown_names}. No cambies el color del vehículo ni agregues elementos que no se pidieron.` },\n      { inline_data: { mime_type: 'image/jpeg', data: $json.vehicle_photo_base64 } }\n    ]\n  }]\n})}}"
+      },
+      "name": "Gemini: Generate Mockup Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [440, 0],
+      "notes": "Requiere convertir vehicle_photo_url a base64 en un nodo previo (HTTP Request + Move Binary Data) — omitido aquí por brevedad."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrae la imagen generada (base64) de la respuesta de Gemini y prepárala para subir a storage\nconst resp = $input.first().json;\nconst part = resp.candidates?.[0]?.content?.parts?.find(p => p.inline_data);\nreturn [{ json: { generated_image_base64: part?.inline_data?.data || null } }];"
+      },
+      "name": "Extract Generated Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "query": "INSERT INTO vehicle_mockups (customer_id, original_photo_url, products_shown, generated_image_url, approval_status) VALUES ($1,$2,$3,$4,'pending') RETURNING id;",
+        "additionalFields": {
+          "queryParams": "={{[$('Fetch Customer + Vehicle Photo').first().json.id, $('Fetch Customer + Vehicle Photo').first().json.vehicle_photo_url, $('Manual/Webhook Trigger (nuevo mockup solicitado)').first().json.products_shown, $json.uploaded_url]}}"
+        }
+      },
+      "name": "Save Mockup (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "notes": "Antes de este nodo, subir generated_image_base64 a un storage (Railway volume / S3 / Cloudinary) y usar esa URL pública.",
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    },
+    {
+      "parameters": {
+        "workflowId": "whatsapp-approval-gate",
+        "options": {}
+      },
+      "name": "Execute: WhatsApp Approval Gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1100, 0],
+      "notes": "Te manda el mockup a WhatsApp antes de enviárselo al cliente — para asegurarte de que la edición IA se ve bien."
+    },
+    {
+      "parameters": {
+        "conditions": { "boolean": [{ "value1": "={{$json.approved}}", "value2": true }] }
+      },
+      "name": "IF: Approved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1320, 0]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "phoneNumberId": "={{$env.WHATSAPP_PHONE_NUMBER_ID}}",
+        "recipientPhoneNumber": "={{$('Fetch Customer + Vehicle Photo').first().json.whatsapp}}",
+        "textBody": "¡Hola! Así se vería tu Jeep con las piezas nuevas de Bronson Composites 🔥 ¿Te gustaría cotizar la instalación?"
+      },
+      "name": "Send Mockup to Customer (WhatsApp)",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [1540, -60],
+      "credentials": { "whatsAppApi": { "id": "WHATSAPP_BUSINESS_CREDENTIAL", "name": "Bronson WhatsApp Business" } }
+    },
+    {
+      "parameters": {
+        "query": "UPDATE vehicle_mockups SET approval_status='approved', sent_to_customer=true, sent_at=now() WHERE id=$1;",
+        "additionalFields": { "queryParams": "={{[$('Save Mockup (Postgres)').first().json.id]}}" }
+      },
+      "name": "Update Mockup (sent)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1760, -60],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    },
+    {
+      "parameters": {
+        "query": "UPDATE vehicle_mockups SET approval_status='rejected' WHERE id=$1;",
+        "additionalFields": { "queryParams": "={{[$('Save Mockup (Postgres)').first().json.id]}}" }
+      },
+      "name": "Update Mockup (rejected)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1540, 120],
+      "credentials": { "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" } }
+    }
+  ],
+  "connections": {
+    "Manual/Webhook Trigger (nuevo mockup solicitado)": { "main": [[{ "node": "Fetch Customer + Vehicle Photo", "type": "main", "index": 0 }]] },
+    "Fetch Customer + Vehicle Photo": { "main": [[{ "node": "Gemini: Generate Mockup Image", "type": "main", "index": 0 }]] },
+    "Gemini: Generate Mockup Image": { "main": [[{ "node": "Extract Generated Image", "type": "main", "index": 0 }]] },
+    "Extract Generated Image": { "main": [[{ "node": "Save Mockup (Postgres)", "type": "main", "index": 0 }]] },
+    "Save Mockup (Postgres)": { "main": [[{ "node": "Execute: WhatsApp Approval Gate", "type": "main", "index": 0 }]] },
+    "Execute: WhatsApp Approval Gate": { "main": [[{ "node": "IF: Approved", "type": "main", "index": 0 }]] },
+    "IF: Approved": {
+      "main": [
+        [{ "node": "Send Mockup to Customer (WhatsApp)", "type": "main", "index": 0 }],
+        [{ "node": "Update Mockup (rejected)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Mockup to Customer (WhatsApp)": { "main": [[{ "node": "Update Mockup (sent)", "type": "main", "index": 0 }]] }
+  }
+}

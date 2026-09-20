@@ -1,0 +1,108 @@
+{
+  "name": "whatsapp-approval-gate",
+  "meta": {
+    "description": "Workflow reusable (Execute Workflow) que envía cualquier borrador (DM o contenido) a WhatsApp Business API para aprobación de Santiago antes de que se ejecute la acción real. Recibe: {type: 'dm'|'content', payload: {...}}. Devuelve: {approved: bool, edited_text?: string}."
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Arma el mensaje de WhatsApp según el tipo (dm o content)\nconst input = $input.first().json;\nlet text;\nif (input.type === 'dm') {\n  text = `🔔 *Nuevo DM para aprobar*\\n\\nLead: ${input.payload.source_handle} (${input.payload.source_platform})\\nComentario original: \\\"${input.payload.source_comment_text}\\\"\\n\\nBorrador de respuesta:\\n\\\"${input.payload.draft_message}\\\"\\n\\nResponde: APROBAR / RECHAZAR / o escribe el texto corregido.`;\n} else {\n  text = `🎬 *Contenido listo para revisar* (${input.payload.slot})\\n\\nCaption: \\\"${input.payload.caption}\\\"\\nPlataformas: ${input.payload.target_platforms.join(', ')}\\nColab MiniTrucks: ${input.payload.collab_with_minitrucks ? 'Sí' : 'No'}\\n\\nVideo/foto adjunto abajo.\\n\\nResponde: APROBAR / RECHAZAR / o describe el cambio que quieres.`;\n}\nreturn [{ json: { ...input, whatsapp_text: text } }];"
+      },
+      "name": "Build WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "phoneNumberId": "={{$env.WHATSAPP_PHONE_NUMBER_ID}}",
+        "recipientPhoneNumber": "={{$env.SANTIAGO_WHATSAPP_NUMBER}}",
+        "textBody": "={{$json.whatsapp_text}}"
+      },
+      "name": "Send to WhatsApp (Business API)",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [440, 0],
+      "credentials": {
+        "whatsAppApi": {
+          "id": "WHATSAPP_BUSINESS_CREDENTIAL",
+          "name": "Bronson WhatsApp Business"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "media",
+        "operation": "sendMedia",
+        "phoneNumberId": "={{$env.WHATSAPP_PHONE_NUMBER_ID}}",
+        "recipientPhoneNumber": "={{$env.SANTIAGO_WHATSAPP_NUMBER}}",
+        "mediaUrl": "={{$json.payload.edited_file_url || $json.payload.raw_file_url}}"
+      },
+      "name": "Send Media (if content)",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [440, 160],
+      "notes": "Solo corre cuando type === 'content' y hay archivo — conectar con un IF antes en producción.",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "WHATSAPP_BUSINESS_CREDENTIAL",
+          "name": "Bronson WhatsApp Business"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "whatsapp-approval-webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
+      "name": "Webhook: WhatsApp Reply",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [220, 320],
+      "notes": "Meta manda aquí las respuestas entrantes de WhatsApp (configurar como webhook de la app de Meta)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interpreta la respuesta de Santiago: APROBAR, RECHAZAR, o texto = edición\nconst body = $input.first().json.body;\nconst msg = (body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.text?.body || '').trim();\nconst upper = msg.toUpperCase();\nlet result;\nif (upper === 'APROBAR' || upper === 'APRUEBO' || upper === 'SI') {\n  result = { approved: true, edited_text: null };\n} else if (upper === 'RECHAZAR' || upper === 'NO') {\n  result = { approved: false, edited_text: null };\n} else if (msg.length > 0) {\n  result = { approved: true, edited_text: msg }; // se interpreta como corrección aprobada\n} else {\n  result = { approved: false, edited_text: null };\n}\nreturn [{ json: result }];"
+      },
+      "name": "Parse Santiago's Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 320]
+    },
+    {
+      "parameters": {
+        "query": "UPDATE dm_log SET approval_status = $1, approved_by = 'santiago', approved_at = now() WHERE id = $2;",
+        "additionalFields": {
+          "queryParams": "={{[$json.approved ? 'approved' : 'rejected', $json.record_id]}}"
+        }
+      },
+      "name": "Update Postgres (approval result)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [660, 320],
+      "credentials": {
+        "postgres": {
+          "id": "BRONSON_POSTGRES_CREDENTIAL",
+          "name": "Bronson CRM DB"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": { "main": [[{ "node": "Build WhatsApp Message", "type": "main", "index": 0 }]] },
+    "Build WhatsApp Message": { "main": [[{ "node": "Send to WhatsApp (Business API)", "type": "main", "index": 0 }, { "node": "Send Media (if content)", "type": "main", "index": 0 }]] },
+    "Webhook: WhatsApp Reply": { "main": [[{ "node": "Parse Santiago's Reply", "type": "main", "index": 0 }]] },
+    "Parse Santiago's Reply": { "main": [[{ "node": "Update Postgres (approval result)", "type": "main", "index": 0 }]] }
+  }
+}

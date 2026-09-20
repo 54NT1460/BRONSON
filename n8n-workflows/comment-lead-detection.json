@@ -1,0 +1,147 @@
+{
+  "name": "comment-lead-detection",
+  "meta": {
+    "description": "Escucha comentarios nuevos en IG/FB/TikTok, detecta intención de compra/precio, crea el lead en Postgres, redacta un DM y lo manda al gate de aprobación de WhatsApp. NUNCA envía el DM directamente."
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "path": "meta-comments-webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
+      },
+      "name": "Webhook: New Comment (Meta)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "notes": "Configurar como Webhook de Meta para el evento 'comments' de la página/IG. Para TikTok usar el nodo 'TikTok Poll Comments' en paralelo (TikTok no ofrece webhooks de comentarios aún, se hace polling)."
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      },
+      "name": "Poll TikTok Comments (cada 15 min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "url": "=https://open.tiktokapis.com/v2/video/comment/list/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "tikTokOAuth2Api"
+      },
+      "name": "TikTok: Fetch Recent Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [220, 200],
+      "credentials": {
+        "tikTokOAuth2Api": { "id": "TIKTOK_CREDENTIAL", "name": "Bronson TikTok" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza el payload de Meta o TikTok a un formato común\nconst item = $input.first().json;\nconst isMeta = !!item.entry;\nlet normalized;\nif (isMeta) {\n  const change = item.entry[0].changes[0].value;\n  normalized = {\n    platform: item.entry[0].id ? 'facebook' : 'instagram',\n    handle: change.from?.username || change.from?.id,\n    comment_text: change.message || change.text,\n    post_url: change.post_id || change.media?.id\n  };\n} else {\n  normalized = {\n    platform: 'tiktok',\n    handle: item.user?.unique_id,\n    comment_text: item.text,\n    post_url: item.video_id\n  };\n}\nreturn [{ json: normalized }];"
+      },
+      "name": "Normalize Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filtro rápido por keywords antes de gastar una llamada a LLM\nconst text = ($input.first().json.comment_text || '').toLowerCase();\nconst keywords = ['precio','cuanto','cuánto','cost','price','disponible','cotiza','interesad','dm','info','vale','$'];\nconst matched = keywords.some(k => text.includes(k));\nreturn [{ json: { ...$input.first().json, keyword_matched: matched } }];"
+      },
+      "name": "Keyword Prefilter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{$json.keyword_matched}}", "value2": true }]
+        }
+      },
+      "name": "IF: Keyword Matched",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [880, 100]
+    },
+    {
+      "parameters": {
+        "modelId": "gpt-4o-mini",
+        "prompt": "=Clasifica este comentario de un video/post de piezas custom de fiberglass/carbon fiber para Jeep. Responde SOLO con un JSON: {\"intent\": \"price_question\"|\"purchase_intent\"|\"general_interest\"|\"spam\", \"suggested_reply\": \"<borrador corto, amigable, en español, invitando a escribir por DM sin dar precio>\"}.\n\nComentario: \"{{$json.comment_text}}\""
+      },
+      "name": "LLM: Classify Intent + Draft Reply",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [1100, 100],
+      "credentials": {
+        "openAiApi": { "id": "OPENAI_CREDENTIAL", "name": "Bronson OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const llm = JSON.parse($input.first().json.choices?.[0]?.message?.content || '{}');\nconst src = $('Keyword Prefilter').first().json;\nreturn [{ json: { ...src, detected_intent: llm.intent, draft_message: llm.suggested_reply } }];"
+      },
+      "name": "Parse LLM Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 100]
+    },
+    {
+      "parameters": {
+        "query": "INSERT INTO leads (source_platform, source_handle, source_post_url, source_comment_text, detected_intent, funnel_stage) VALUES ($1,$2,$3,$4,$5,'dm_drafted') RETURNING id;",
+        "additionalFields": {
+          "queryParams": "={{[$json.platform, $json.handle, $json.post_url, $json.comment_text, $json.detected_intent]}}"
+        }
+      },
+      "name": "Insert Lead (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1540, 100],
+      "credentials": {
+        "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" }
+      }
+    },
+    {
+      "parameters": {
+        "query": "INSERT INTO dm_log (lead_id, channel, direction, message_text, approval_status) VALUES ($1,$2,'draft',$3,'pending') RETURNING id;",
+        "additionalFields": {
+          "queryParams": "={{[$json.id, $('Parse LLM Output').first().json.platform, $('Parse LLM Output').first().json.draft_message]}}"
+        }
+      },
+      "name": "Insert DM Draft (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1760, 100],
+      "credentials": {
+        "postgres": { "id": "BRONSON_POSTGRES_CREDENTIAL", "name": "Bronson CRM DB" }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": "whatsapp-approval-gate",
+        "options": {}
+      },
+      "name": "Execute: WhatsApp Approval Gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1980, 100],
+      "notes": "Pasa {type:'dm', payload:{...lead + draft_message}}. Solo si approved=true se llama al nodo de envío real de DM (no incluido aquí — agregar nodo de envío de Instagram/Facebook Send API una vez aprobado)."
+    }
+  ],
+  "connections": {
+    "Webhook: New Comment (Meta)": { "main": [[{ "node": "Normalize Comment", "type": "main", "index": 0 }]] },
+    "Poll TikTok Comments (cada 15 min)": { "main": [[{ "node": "TikTok: Fetch Recent Comments", "type": "main", "index": 0 }]] },
+    "TikTok: Fetch Recent Comments": { "main": [[{ "node": "Normalize Comment", "type": "main", "index": 0 }]] },
+    "Normalize Comment": { "main": [[{ "node": "Keyword Prefilter", "type": "main", "index": 0 }]] },
+    "Keyword Prefilter": { "main": [[{ "node": "IF: Keyword Matched", "type": "main", "index": 0 }]] },
+    "IF: Keyword Matched": { "main": [[{ "node": "LLM: Classify Intent + Draft Reply", "type": "main", "index": 0 }], []] },
+    "LLM: Classify Intent + Draft Reply": { "main": [[{ "node": "Parse LLM Output", "type": "main", "index": 0 }]] },
+    "Parse LLM Output": { "main": [[{ "node": "Insert Lead (Postgres)", "type": "main", "index": 0 }]] },
+    "Insert Lead (Postgres)": { "main": [[{ "node": "Insert DM Draft (Postgres)", "type": "main", "index": 0 }]] },
+    "Insert DM Draft (Postgres)": { "main": [[{ "node": "Execute: WhatsApp Approval Gate", "type": "main", "index": 0 }]] }
+  }
+}
