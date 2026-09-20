@@ -1,0 +1,45 @@
+{
+  "_comment": "Horario y reglas de publicación de contenido. Editable sin tocar los workflows de n8n — content-scheduler-publish.json lee 'slot' de aquí para decidir hora y plataformas.",
+  "timezone": "America/Puerto_Rico",
+
+  "slots": {
+    "turno_1": {
+      "label": "Turno 1 — Colab MiniTrucks (mañana)",
+      "raw_recording_window": "08:00-12:00",
+      "publish_time": "12:15",
+      "collab_with_minitrucks": true,
+      "target_platforms": ["instagram", "tiktok", "facebook"],
+      "content_style": "proceso de instalación / build day"
+    },
+    "turno_2": {
+      "label": "Turno 2 — Colab MiniTrucks (tarde)",
+      "raw_recording_window": "13:00-17:00",
+      "publish_time": "17:15",
+      "collab_with_minitrucks": true,
+      "target_platforms": ["instagram", "tiktok", "facebook", "pinterest"],
+      "content_style": "resultado final / antes-después"
+    },
+    "turno_3": {
+      "label": "Turno 3 — Bronson HQ (noche, sin colab)",
+      "raw_recording_window": "18:00-21:00",
+      "publish_time": "21:30",
+      "collab_with_minitrucks": false,
+      "target_platforms": ["instagram", "tiktok", "facebook", "reddit"],
+      "content_style": "detrás de cámara / proceso de fabricación en HQ"
+    }
+  },
+
+  "posting_rules": {
+    "never_include_price_in_caption": true,
+    "never_use_phrase_patterns": ["se vende", "precio:", "$XXX c/u"],
+    "cta_default": "DM para info / cotización",
+    "reddit_pinterest_style": "organico_venta_suave",
+    "reddit_pinterest_notes": "Solo contenido de valor: builds, tips de instalación, behind-the-scenes. Nunca precio ni link directo de compra en el post — solo referencia al perfil/bio."
+  },
+
+  "approval": {
+    "required_for_all_content": true,
+    "channel": "whatsapp",
+    "note": "Mientras nos vamos conociendo, TODO contenido y TODO DM pasa por tu aprobación antes de publicarse/enviarse. Esto se puede relajar más adelante (ej. auto-publicar contenido de turno_3 sin colab) una vez confirmes que el sistema acierta consistentemente."
+  }
+}
