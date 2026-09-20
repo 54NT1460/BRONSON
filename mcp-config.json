@@ -1,0 +1,38 @@
+{
+  "_comment": "MCPs recomendados para trabajar este proyecto con Claude Code. Copia las entradas que necesites a tu configuración de MCP servers (ej. claude mcp add, o el archivo de settings de tu cliente). Rellena los placeholders con los valores de tu .env.",
+
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "${DATABASE_URL}"],
+      "description": "Permite a Claude Code consultar y modificar el CRM (leads, content_queue, orders) directamente durante el desarrollo y debugging."
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/claude/bronson-composites-crm"],
+      "description": "Acceso de lectura/escritura al repo del proyecto para que Claude Code pueda iterar sobre workflows, schema y scripts."
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" },
+      "description": "Para versionar el repo y automatizar despliegues a Railway vía GitHub Actions si lo deseas."
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "description": "Útil para probar endpoints de Meta Graph API, TikTok, Shopify, etc. desde Claude Code sin salir a un navegador."
+    }
+  },
+
+  "recommended_but_not_mcp": {
+    "n8n": "n8n no tiene un MCP oficial estable todavía — se administra vía su propia UI web (desplegada en Railway) o su CLI/API REST. Claude Code puede usar el nodo 'fetch' MCP de arriba, o simplemente curl, para importar/activar workflows vía la API REST de n8n (POST /api/v1/workflows).",
+    "shopify_admin_mcp": "Shopify tiene un MCP community (buscar 'shopify-mcp-server' en npm) — añádelo una vez tengas SHOPIFY_ADMIN_API_ACCESS_TOKEN si quieres que Claude Code gestione productos/pedidos directamente.",
+    "meta_business": "No hay MCP oficial de Meta; se usa el nodo httpRequest de n8n directo contra Graph API (ya configurado en los workflows)."
+  },
+
+  "notes": [
+    "El MCP de postgres es el más útil día a día: te permite pedirle a Claude Code 'muéstrame los leads pendientes de aprobación' o 'cuántos videos se publicaron esta semana' sin salir de la sesión.",
+    "No expongas GEMINI_API_KEY, WHATSAPP_ACCESS_TOKEN, ni tokens de marketplaces a MCPs de terceros que no controles — solo a los servidores oficiales listados arriba."
+  ]
+}
