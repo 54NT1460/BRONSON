@@ -1,38 +1,71 @@
 {
   "_comment": "MCPs recomendados para trabajar este proyecto con Claude Code. Copia las entradas que necesites a tu configuración de MCP servers (ej. claude mcp add, o el archivo de settings de tu cliente). Rellena los placeholders con los valores de tu .env.",
-
   "mcpServers": {
     "postgres": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres", "${DATABASE_URL}"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "${DATABASE_URL}"
+      ],
       "description": "Permite a Claude Code consultar y modificar el CRM (leads, content_queue, orders) directamente durante el desarrollo y debugging."
     },
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/claude/bronson-composites-crm"],
-      "description": "Acceso de lectura/escritura al repo del proyecto para que Claude Code pueda iterar sobre workflows, schema y scripts."
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "description": "Acceso de lectura/escritura al repo del proyecto (ruta relativa: ejecuta Claude Code desde la raíz del repo) para iterar sobre workflows, schema y scripts."
     },
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" },
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
       "description": "Para versionar el repo y automatizar despliegues a Railway vía GitHub Actions si lo deseas."
     },
     "fetch": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-fetch"
+      ],
       "description": "Útil para probar endpoints de Meta Graph API, TikTok, Shopify, etc. desde Claude Code sin salir a un navegador."
     }
   },
-
-  "recommended_but_not_mcp": {
-    "n8n": "n8n no tiene un MCP oficial estable todavía — se administra vía su propia UI web (desplegada en Railway) o su CLI/API REST. Claude Code puede usar el nodo 'fetch' MCP de arriba, o simplemente curl, para importar/activar workflows vía la API REST de n8n (POST /api/v1/workflows).",
-    "shopify_admin_mcp": "Shopify tiene un MCP community (buscar 'shopify-mcp-server' en npm) — añádelo una vez tengas SHOPIFY_ADMIN_API_ACCESS_TOKEN si quieres que Claude Code gestione productos/pedidos directamente.",
-    "meta_business": "No hay MCP oficial de Meta; se usa el nodo httpRequest de n8n directo contra Graph API (ya configurado en los workflows)."
+  "claude_ai_connectors": {
+    "_comment": "Conectores hospedados del directorio de claude.ai (no se instalan con npx). Conéctalos desde claude.ai > Settings > Connectors y actívalos en la sesión. Verificados en el registro de MCP el 2026-10-08.",
+    "n8n": {
+      "description": "Buscar, ejecutar, publicar/despublicar workflows y revisar ejecuciones (search_workflows, execute_workflow, get_execution, publish_workflow...). Reemplaza el uso de curl contra /api/v1/workflows para administrar los 4 workflows de n8n-workflows/.",
+      "priority": "alta"
+    },
+    "shopify": {
+      "description": "Productos, pedidos y clientes de la tienda (search_products, create-product, update-product, list-orders, list-customers...). Reemplaza el MCP community 'shopify-mcp-server'.",
+      "priority": "alta"
+    },
+    "railway": {
+      "description": "Deploy, logs y estado de los servicios n8n y Postgres en Railway (get-logs, get-status, create-deployment...).",
+      "priority": "alta"
+    },
+    "metricool": {
+      "description": "Opcional: programar posts y ver mejores horarios. Solapa con content-scheduler-publish y no pasa por la aprobación de WhatsApp; úsalo solo para analítica/horarios.",
+      "priority": "opcional"
+    }
   },
-
   "notes": [
     "El MCP de postgres es el más útil día a día: te permite pedirle a Claude Code 'muéstrame los leads pendientes de aprobación' o 'cuántos videos se publicaron esta semana' sin salir de la sesión.",
-    "No expongas GEMINI_API_KEY, WHATSAPP_ACCESS_TOKEN, ni tokens de marketplaces a MCPs de terceros que no controles — solo a los servidores oficiales listados arriba."
-  ]
+    "No expongas GEMINI_API_KEY, WHATSAPP_ACCESS_TOKEN, ni tokens de marketplaces a MCPs de terceros que no controles — solo a los servidores oficiales listados arriba.",
+    "Conectores de claude.ai: da acceso solo a n8n, Shopify y Railway de tu cuenta; no pegues WHATSAPP_ACCESS_TOKEN ni tokens de marketplaces en ningún conector."
+  ],
+  "recommended_but_not_mcp": {
+    "n8n": "Ver claude_ai_connectors.n8n. Si prefieres no usar el conector, la API REST de n8n (POST /api/v1/workflows) vía el MCP 'fetch' o curl sigue funcionando.",
+    "meta_business": "No hay MCP de Meta/Instagram/WhatsApp; se usa el nodo httpRequest de n8n directo contra Graph API (ya configurado en los workflows).",
+    "pinterest_reddit_ebay_gemini": "Sin MCP disponible en el registro; se llaman por API directa desde n8n. Ojo: la entrada 'Gemini' del registro es de cripto, no la API de imágenes de Google."
+  }
 }
